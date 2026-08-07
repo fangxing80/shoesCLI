@@ -213,7 +213,7 @@ fn prompt_bool<R: BufRead>(
     }
 }
 
-/// The set of protocols exposed by the wizard's first version.
+/// The set of protocols exposed by the wizard.
 #[derive(Clone, Copy)]
 enum WizardProtocol {
     VlessReality,
@@ -221,8 +221,14 @@ enum WizardProtocol {
     Shadowsocks,
     Trojan,
     Hysteria2,
+    Tuic,
+    Anytls,
+    Naiveproxy,
+    Snell,
+    ShadowTls,
     Socks,
     Http,
+    Mixed,
 }
 
 fn generate_config_flow<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<()> {
@@ -236,8 +242,14 @@ fn generate_config_flow<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<()
     println!("  {}  Shadowsocks", p.accent("3"));
     println!("  {}  Trojan  (over TLS)", p.accent("4"));
     println!("  {}  Hysteria2  (QUIC)", p.accent("5"));
-    println!("  {}  SOCKS5", p.accent("6"));
-    println!("  {}  HTTP", p.accent("7"));
+    println!("  {}  TUIC v5  (QUIC)", p.accent("6"));
+    println!("  {}  AnyTLS  (over TLS)", p.accent("7"));
+    println!("  {}  NaiveProxy  (over TLS, h2)", p.accent("8"));
+    println!("  {}  Snell v3", p.accent("9"));
+    println!("  {} ShadowTLS v3", p.accent("10"));
+    println!("  {} SOCKS5", p.accent("11"));
+    println!("  {} HTTP", p.accent("12"));
+    println!("  {} Mixed  (HTTP + SOCKS5)", p.accent("13"));
     print!("{}", p.dim("Select a protocol: "));
     io::stdout().flush()?;
 
@@ -252,8 +264,14 @@ fn generate_config_flow<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<()
         "3" => WizardProtocol::Shadowsocks,
         "4" => WizardProtocol::Trojan,
         "5" => WizardProtocol::Hysteria2,
-        "6" => WizardProtocol::Socks,
-        "7" => WizardProtocol::Http,
+        "6" => WizardProtocol::Tuic,
+        "7" => WizardProtocol::Anytls,
+        "8" => WizardProtocol::Naiveproxy,
+        "9" => WizardProtocol::Snell,
+        "10" => WizardProtocol::ShadowTls,
+        "11" => WizardProtocol::Socks,
+        "12" => WizardProtocol::Http,
+        "13" => WizardProtocol::Mixed,
         other => {
             println!("{}", p.err(&format!("Invalid protocol: {other}")));
             return Ok(());
@@ -266,8 +284,14 @@ fn generate_config_flow<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<()
         WizardProtocol::Shadowsocks => build_shadowsocks(input, p)?,
         WizardProtocol::Trojan => build_trojan(input, p)?,
         WizardProtocol::Hysteria2 => build_hysteria2(input, p)?,
-        WizardProtocol::Socks => build_socks_http(input, p, true)?,
-        WizardProtocol::Http => build_socks_http(input, p, false)?,
+        WizardProtocol::Tuic => build_tuic(input, p)?,
+        WizardProtocol::Anytls => build_anytls(input, p)?,
+        WizardProtocol::Naiveproxy => build_naiveproxy(input, p)?,
+        WizardProtocol::Snell => build_snell(input, p)?,
+        WizardProtocol::ShadowTls => build_shadowtls(input, p)?,
+        WizardProtocol::Socks => build_socks_http(input, p, SimpleProxy::Socks)?,
+        WizardProtocol::Http => build_socks_http(input, p, SimpleProxy::Http)?,
+        WizardProtocol::Mixed => build_socks_http(input, p, SimpleProxy::Mixed)?,
     };
 
     println!();
@@ -503,12 +527,163 @@ fn build_hysteria2<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String>
     Ok(yaml)
 }
 
-fn build_socks_http<R: BufRead>(input: &mut R, p: &Palette, is_socks: bool) -> io::Result<String> {
-    let default_port = if is_socks { 1080 } else { 8080 };
+fn build_tuic<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
+    let address = prompt_bind_address(input, p, 443)?;
+    let uuid = prompt_uuid(input, p)?;
+    let password = prompt(input, p, "TUIC password", None)?;
+    let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
+    let key = prompt(input, p, "Private key path (PEM)", Some("key.pem"))?;
+
+    let yaml = format!(
+        "- address: {address}\n\
+         \x20 transport: quic\n\
+         \x20 quic_settings:\n\
+         \x20   cert: {cert}\n\
+         \x20   key: {key}\n\
+         \x20 protocol:\n\
+         \x20   type: tuic\n\
+         \x20   uuid: {uuid}\n\
+         \x20   password: \"{password}\"\n"
+    );
+    Ok(yaml)
+}
+
+fn build_anytls<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
+    let address = prompt_bind_address(input, p, 443)?;
+    let name = prompt(input, p, "User name (label)", Some("user1"))?;
+    let password = prompt(input, p, "AnyTLS password", None)?;
+    let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
+    let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
+    let key = prompt(input, p, "Private key path (PEM)", Some("key.pem"))?;
+
+    let yaml = format!(
+        "- address: {address}\n\
+         \x20 protocol:\n\
+         \x20   type: tls\n\
+         \x20   tls_targets:\n\
+         \x20     \"{sni}\":\n\
+         \x20       cert: {cert}\n\
+         \x20       key: {key}\n\
+         \x20       protocol:\n\
+         \x20         type: anytls\n\
+         \x20         users:\n\
+         \x20           - name: {name}\n\
+         \x20             password: \"{password}\"\n\
+         \x20         udp_enabled: true\n"
+    );
+    Ok(yaml)
+}
+
+fn build_naiveproxy<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
+    let address = prompt_bind_address(input, p, 443)?;
+    let username = prompt(input, p, "NaiveProxy username", Some("user1"))?;
+    let password = prompt(input, p, "NaiveProxy password", None)?;
+    let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
+    let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
+    let key = prompt(input, p, "Private key path (PEM)", Some("key.pem"))?;
+
+    let yaml = format!(
+        "- address: {address}\n\
+         \x20 protocol:\n\
+         \x20   type: tls\n\
+         \x20   tls_targets:\n\
+         \x20     \"{sni}\":\n\
+         \x20       cert: {cert}\n\
+         \x20       key: {key}\n\
+         \x20       alpn_protocols: [\"h2\"]\n\
+         \x20       protocol:\n\
+         \x20         type: naiveproxy\n\
+         \x20         users:\n\
+         \x20           - username: {username}\n\
+         \x20             password: \"{password}\"\n\
+         \x20         padding: true\n\
+         \x20         udp_enabled: true\n"
+    );
+    Ok(yaml)
+}
+
+fn build_snell<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
+    let address = prompt_bind_address(input, p, 443)?;
+    let cipher = prompt_cipher(
+        input,
+        p,
+        "Snell cipher",
+        &["aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305"],
+        "aes-256-gcm",
+    )?;
+    let password = prompt(input, p, "Snell password", None)?;
+
+    let yaml = format!(
+        "- address: {address}\n\
+         \x20 protocol:\n\
+         \x20   type: snell\n\
+         \x20   cipher: {cipher}\n\
+         \x20   password: \"{password}\"\n\
+         \x20   udp_enabled: true\n"
+    );
+    Ok(yaml)
+}
+
+fn build_shadowtls<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
+    let address = prompt_bind_address(input, p, 443)?;
+    let password = prompt(input, p, "ShadowTLS password", None)?;
+    let sni = prompt(input, p, "Handshake SNI (cert domain)", Some("example.com"))?;
+    let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
+    let key = prompt(input, p, "Private key path (PEM)", Some("key.pem"))?;
+
+    // ShadowTLS wraps an inner proxy; default to Shadowsocks 2022 as the inner.
+    let ss_cipher = "2022-blake3-aes-256-gcm";
+    let ss_password = generate_ss2022_password(ss_cipher)
+        .unwrap_or_else(|| "REPLACE_WITH_GENERATED_PASSWORD".to_string());
+    println!(
+        "{}",
+        p.dim("Inner protocol is Shadowsocks-2022; a random key was generated.")
+    );
+    let ss_password = prompt(input, p, "Inner Shadowsocks password", Some(&ss_password))?;
+
+    let yaml = format!(
+        "- address: {address}\n\
+         \x20 protocol:\n\
+         \x20   type: tls\n\
+         \x20   shadowtls_targets:\n\
+         \x20     \"{sni}\":\n\
+         \x20       password: \"{password}\"\n\
+         \x20       handshake:\n\
+         \x20         cert: {cert}\n\
+         \x20         key: {key}\n\
+         \x20       protocol:\n\
+         \x20         type: shadowsocks\n\
+         \x20         cipher: {ss_cipher}\n\
+         \x20         password: \"{ss_password}\"\n"
+    );
+    Ok(yaml)
+}
+
+#[derive(Clone, Copy)]
+enum SimpleProxy {
+    Socks,
+    Http,
+    Mixed,
+}
+
+fn build_socks_http<R: BufRead>(
+    input: &mut R,
+    p: &Palette,
+    kind: SimpleProxy,
+) -> io::Result<String> {
+    let default_port = match kind {
+        SimpleProxy::Socks => 1080,
+        SimpleProxy::Http => 8080,
+        SimpleProxy::Mixed => 7890,
+    };
     let address = prompt_bind_address(input, p, default_port)?;
     let want_auth = prompt_bool(input, p, "Require username/password auth", false)?;
 
-    let type_name = if is_socks { "socks" } else { "http" };
+    let type_name = match kind {
+        SimpleProxy::Socks => "socks",
+        SimpleProxy::Http => "http",
+        SimpleProxy::Mixed => "mixed",
+    };
     let mut yaml = format!(
         "- address: {address}\n\
          \x20 protocol:\n\
@@ -522,7 +697,8 @@ fn build_socks_http<R: BufRead>(input: &mut R, p: &Palette, is_socks: bool) -> i
         yaml.push_str(&format!("    password: \"{password}\"\n"));
     }
 
-    if is_socks {
+    // SOCKS5 and Mixed support UDP; plain HTTP does not.
+    if !matches!(kind, SimpleProxy::Http) {
         yaml.push_str("    udp_enabled: true\n");
     }
 

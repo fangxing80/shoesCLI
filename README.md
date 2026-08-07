@@ -47,14 +47,37 @@ All server protocols plus:
 - **TLS fingerprint authentication**: Certificate pinning for TLS/QUIC
 - **Hot reloading**: Apply config changes without restart
 - **Unix socket support**: Bind to Unix domain sockets
+- **Interactive wizard**: Menu-driven config generation with `shoes menu`
+- **One-line installer**: `curl | sh` install with optional systemd service on Linux
 
 For advanced access control (IP allowlist/blocklists), see [tobaru](https://github.com/cfal/tobaru).
 
 ## Installation
 
+### One-line install (Linux/macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fangxing80/shoesCLI/master/scripts/install.sh | sh
+```
+
+The script detects your OS/architecture, downloads the matching release binary to
+`/usr/local/bin`, and on Linux with systemd installs and enables a `shoes` service.
+
+Environment overrides:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SHOES_VERSION` | latest | Release tag to install |
+| `SHOES_BIN_DIR` | `/usr/local/bin` | Binary install directory |
+| `SHOES_CONFIG_DIR` | `/etc/shoes` | Config directory (systemd) |
+| `SHOES_NO_SERVICE` | `0` | Set to `1` to skip systemd setup |
+| `SHOES_USE_MUSL` | `0` | Set to `1` to prefer the static musl build on Linux |
+
+### Prebuilt binaries
+
 Precompiled binaries for x86_64 and Apple aarch64 are available on [Github Releases](https://github.com/cfal/shoes/releases).
 
-Or install with cargo:
+### From source
 
 ```bash
 cargo install shoes
@@ -67,13 +90,42 @@ shoes [OPTIONS] <config.yaml> [config.yaml...]
 
 OPTIONS:
     -t, --threads NUM    Set the number of worker threads (default: CPU count)
+    -l, --log-file PATH  Log to file (repeatable; "-" means stderr; default: stderr)
     -d, --dry-run        Parse the config and exit
     --no-reload          Disable automatic config reloading on file changes
+    -V, --version        Print version information and exit
 
 COMMANDS:
-    generate-reality-keypair                  Generate a new Reality X25519 keypair
+    menu                                           Launch the interactive config wizard (alias: wizard)
+    generate-reality-keypair                       Generate a new Reality X25519 keypair
     generate-shadowsocks-2022-password <cipher>    Generate a Shadowsocks password
+    generate-vless-user-id                         Generate a random VLESS/VMess user ID (UUID v4)
 ```
+
+With no config argument, `shoes` loads `config.shoes.yaml` from the current directory.
+
+### Interactive wizard
+
+Run `shoes menu` (alias `shoes wizard`) for a menu-driven interface that generates a
+server config without hand-writing YAML:
+
+```
+================================
+   shoes  interactive  menu
+================================
+  1  Generate a server config (wizard)
+  2  Generate a REALITY keypair
+  3  Generate a VLESS/VMess UUID
+  4  Generate a Shadowsocks-2022 password
+  5  Validate a config file (dry-run)
+  0  Exit
+```
+
+The config generator supports VLESS+REALITY+Vision, VMess, Shadowsocks, Trojan,
+Hysteria2, TUIC v5, AnyTLS, NaiveProxy, Snell v3, ShadowTLS v3, SOCKS5, HTTP, and
+Mixed (HTTP+SOCKS5). It auto-generates keys/UUIDs/short IDs and Shadowsocks-2022 keys,
+fills sensible defaults, validates the result, and writes it to `config.shoes.yaml`
+(or a path you choose).
 
 ### Examples
 ```bash
@@ -92,11 +144,17 @@ shoes --dry-run config.yaml
 # Run without hot-reloading
 shoes --no-reload config.yaml
 
+# Launch the interactive config wizard
+shoes menu
+
 # Generate Reality keypair
 shoes generate-reality-keypair
 
 # Generate Shadowsocks 2022 cipher password
 shoes generate-shadowsocks-2022-password 2022-blake3-aes-256-gcm
+
+# Generate a VLESS/VMess user ID (UUID v4)
+shoes generate-vless-user-id
 ```
 
 ## Configuration
