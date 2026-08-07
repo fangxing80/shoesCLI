@@ -1,11 +1,9 @@
 name: Build Mobile Libraries
 
+# Mobile (iOS/Android) builds are temporarily disabled for releases.
+# Automatic push/PR/tag triggers are turned off; run manually via the
+# "Run workflow" button (workflow_dispatch) when a mobile build is needed.
 on:
-  push:
-    branches: [ master ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ master ]
   workflow_dispatch:
 
 env:

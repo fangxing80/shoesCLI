@@ -37,15 +37,15 @@ jobs:
             use_cross: true
             binary_name: shoes
 
-          # macOS builds (native compilation)
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            use_cross: false
-            binary_name: shoes
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            use_cross: false
-            binary_name: shoes
+          # macOS builds temporarily disabled - Linux-only releases for now.
+          # - target: x86_64-apple-darwin
+          #   os: macos-latest
+          #   use_cross: false
+          #   binary_name: shoes
+          # - target: aarch64-apple-darwin
+          #   os: macos-latest
+          #   use_cross: false
+          #   binary_name: shoes
 
           # Windows builds
           # TODO: enable when working
