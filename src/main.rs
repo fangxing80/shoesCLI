@@ -49,6 +49,7 @@ mod uuid_util;
 mod vless;
 mod vmess;
 mod websocket;
+mod wizard;
 mod xudp;
 
 #[cfg(not(any(target_env = "msvc", target_os = "ios", target_os = "android")))]
@@ -113,6 +114,9 @@ fn print_usage_and_exit(arg0: String) {
     eprintln!("    -V, --version        Print version information and exit");
     eprintln!();
     eprintln!("COMMANDS:");
+    eprintln!(
+        "    menu                                           Launch the interactive config wizard (alias: wizard)"
+    );
     eprintln!(
         "    generate-reality-keypair                       Generate a new Reality X25519 keypair"
     );
@@ -258,6 +262,14 @@ fn main() {
                 eprintln!("  2022-blake3-chacha20-poly1305");
                 std::process::exit(1);
             }
+        }
+        return;
+    }
+
+    if args.iter().any(|s| s == "menu" || s == "wizard") {
+        if let Err(e) = wizard::run_wizard() {
+            eprintln!("Wizard error: {e}");
+            std::process::exit(1);
         }
         return;
     }
