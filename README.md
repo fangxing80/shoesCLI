@@ -1,5 +1,7 @@
 # shoes
 
+English | [简体中文](./README.zh-CN.md)
+
 shoes is a high-performance multi-protocol proxy server written in Rust.
 
 ## Supported Protocols
