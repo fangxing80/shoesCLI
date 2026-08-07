@@ -15,9 +15,217 @@ use crate::shadowsocks::ShadowsocksCipher;
 use crate::uuid_util::generate_uuid;
 
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
-use base64::engine::{Engine as _, general_purpose::STANDARD};
+use base64::engine::{Engine as _, general_purpose::STANDARD, general_purpose::URL_SAFE_NO_PAD};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 const DEFAULT_CONFIG_PATH: &str = "config.shoes.yaml";
+
+/// Fields captured during config generation that are needed to build a client
+/// share link. Only protocols with a widely-adopted share-link format produce
+/// one; others produce `None`.
+enum ShareParams {
+    VlessReality {
+        port: u16,
+        user_id: String,
+        sni: String,
+        public_key: String,
+        short_id: String,
+        vision: bool,
+    },
+    Vmess {
+        port: u16,
+        user_id: String,
+        cipher: String,
+    },
+    Shadowsocks {
+        port: u16,
+        cipher: String,
+        password: String,
+    },
+    Trojan {
+        port: u16,
+        password: String,
+        sni: String,
+    },
+    Hysteria2 {
+        port: u16,
+        password: String,
+        sni: String,
+    },
+    Tuic {
+        port: u16,
+        uuid: String,
+        password: String,
+        sni: String,
+    },
+    Naiveproxy {
+        port: u16,
+        username: String,
+        password: String,
+        sni: String,
+    },
+}
+
+// Percent-encode set for URL components: encode controls, space, delimiters and
+// sub-delimiters that would break parsing, but keep the unreserved set
+// (ALPHA / DIGIT / '-' / '.' / '_' / '~') intact per RFC 3986 so hosts, SNIs and
+// base64url keys stay readable.
+const URL_COMPONENT: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'&')
+    .add(b'/')
+    .add(b':')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}')
+    .add(b'+')
+    .add(b'=');
+
+fn enc(s: &str) -> String {
+    utf8_percent_encode(s, URL_COMPONENT).to_string()
+}
+
+impl ShareParams {
+    /// Build a client share link for this protocol using the given public server
+    /// host (IP or domain). Formats follow the common community conventions used
+    /// by v2rayN / Shadowrocket / Clash-family clients.
+    fn to_share_url(&self, host: &str, tag: &str) -> String {
+        match self {
+            ShareParams::VlessReality {
+                port,
+                user_id,
+                sni,
+                public_key,
+                short_id,
+                vision,
+            } => {
+                let flow = if *vision {
+                    "&flow=xtls-rprx-vision"
+                } else {
+                    ""
+                };
+                format!(
+                    "vless://{user_id}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp=chrome&pbk={pbk}&sid={sid}&type=tcp{flow}#{tag}",
+                    pbk = enc(public_key),
+                    sid = enc(short_id),
+                    sni = enc(sni),
+                    tag = enc(tag),
+                )
+            }
+            ShareParams::Vmess {
+                port,
+                user_id,
+                cipher,
+            } => {
+                // vmess:// carries a base64-encoded JSON object (v2rayN "v2" format).
+                let json = format!(
+                    "{{\"v\":\"2\",\"ps\":\"{tag}\",\"add\":\"{host}\",\"port\":\"{port}\",\"id\":\"{user_id}\",\"aid\":\"0\",\"scy\":\"{cipher}\",\"net\":\"tcp\",\"type\":\"none\",\"tls\":\"\"}}"
+                );
+                format!("vmess://{}", STANDARD.encode(json.as_bytes()))
+            }
+            ShareParams::Shadowsocks {
+                port,
+                cipher,
+                password,
+            } => {
+                // SIP002: ss://base64url(method:password)@host:port#tag
+                let userinfo = URL_SAFE_NO_PAD.encode(format!("{cipher}:{password}").as_bytes());
+                format!("ss://{userinfo}@{host}:{port}#{}", enc(tag))
+            }
+            ShareParams::Trojan {
+                port,
+                password,
+                sni,
+            } => {
+                format!(
+                    "trojan://{pw}@{host}:{port}?security=tls&sni={sni}&type=tcp#{tag}",
+                    pw = enc(password),
+                    sni = enc(sni),
+                    tag = enc(tag),
+                )
+            }
+            ShareParams::Hysteria2 {
+                port,
+                password,
+                sni,
+            } => {
+                format!(
+                    "hysteria2://{pw}@{host}:{port}?sni={sni}#{tag}",
+                    pw = enc(password),
+                    sni = enc(sni),
+                    tag = enc(tag),
+                )
+            }
+            ShareParams::Tuic {
+                port,
+                uuid,
+                password,
+                sni,
+            } => {
+                format!(
+                    "tuic://{uuid}:{pw}@{host}:{port}?sni={sni}&congestion_control=bbr&alpn=h3#{tag}",
+                    pw = enc(password),
+                    sni = enc(sni),
+                    tag = enc(tag),
+                )
+            }
+            ShareParams::Naiveproxy {
+                port,
+                username,
+                password,
+                sni,
+            } => {
+                // NaiveProxy uses the naive+https scheme understood by the klzgrad
+                // naive client that v2rayN bundles.
+                let _ = sni;
+                format!(
+                    "naive+https://{user}:{pw}@{host}:{port}?padding=true#{tag}",
+                    user = enc(username),
+                    pw = enc(password),
+                    tag = enc(tag),
+                )
+            }
+        }
+    }
+
+    fn protocol_label(&self) -> &'static str {
+        match self {
+            ShareParams::VlessReality { .. } => "VLESS-REALITY",
+            ShareParams::Vmess { .. } => "VMess",
+            ShareParams::Shadowsocks { .. } => "Shadowsocks",
+            ShareParams::Trojan { .. } => "Trojan",
+            ShareParams::Hysteria2 { .. } => "Hysteria2",
+            ShareParams::Tuic { .. } => "TUIC",
+            ShareParams::Naiveproxy { .. } => "NaiveProxy",
+        }
+    }
+
+    /// The SNI/domain to suggest as the default public host, if any. TLS-based
+    /// protocols must be reached via their certificate/SNI domain, so it is a
+    /// better default than a bare IP.
+    fn default_host(&self) -> Option<&str> {
+        match self {
+            ShareParams::VlessReality { sni, .. }
+            | ShareParams::Trojan { sni, .. }
+            | ShareParams::Hysteria2 { sni, .. }
+            | ShareParams::Tuic { sni, .. }
+            | ShareParams::Naiveproxy { sni, .. } => Some(sni),
+            ShareParams::Vmess { .. } | ShareParams::Shadowsocks { .. } => None,
+        }
+    }
+}
 
 // ANSI colors. Disabled automatically when stdout is not a TTY.
 struct Palette {
@@ -278,7 +486,7 @@ fn generate_config_flow<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<()
         }
     };
 
-    let yaml = match protocol {
+    let (yaml, share) = match protocol {
         WizardProtocol::VlessReality => build_vless_reality(input, p)?,
         WizardProtocol::Vmess => build_vmess(input, p)?,
         WizardProtocol::Shadowsocks => build_shadowsocks(input, p)?,
@@ -336,23 +544,53 @@ fn generate_config_flow<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<()
         "{}",
         p.dim(&format!("Start the server with:  shoes {path}"))
     );
+
+    if let Some(share) = share {
+        emit_share_link(input, p, &share)?;
+    }
+
     Ok(())
 }
 
-/// Ask for a bind address, defaulting the host to 0.0.0.0 and prompting for a port.
+/// Prompt for the server's public host and print a client import link.
+fn emit_share_link<R: BufRead>(input: &mut R, p: &Palette, share: &ShareParams) -> io::Result<()> {
+    println!();
+    println!("{}", p.title("-- Client import link --"));
+    let host = prompt(
+        input,
+        p,
+        "Server public IP or domain (for the share link)",
+        share.default_host(),
+    )?;
+    let tag = prompt(input, p, "Node label", Some("shoes"))?;
+    let url = share.to_share_url(&host, &tag);
+    println!();
+    println!("  {} ({})", p.accent("import URL"), share.protocol_label());
+    println!("  {url}");
+    println!(
+        "{}",
+        p.dim("Paste into v2rayN / Shadowrocket / Clash-family clients to import.")
+    );
+    Ok(())
+}
+
+/// Ask for a bind address, defaulting the host to 0.0.0.0 and prompting for a
+/// port. Returns the formatted `host:port` bind string and the chosen port
+/// (the port is reused when building client share links).
 fn prompt_bind_address<R: BufRead>(
     input: &mut R,
     p: &Palette,
     default_port: u16,
-) -> io::Result<String> {
+) -> io::Result<(String, u16)> {
     let host = prompt(input, p, "Bind host", Some("0.0.0.0"))?;
     let port = prompt_port(input, p, default_port)?;
-    if host.contains(':') && !host.starts_with('[') {
+    let bind = if host.contains(':') && !host.starts_with('[') {
         // IPv6 literal without brackets.
-        Ok(format!("[{host}]:{port}"))
+        format!("[{host}]:{port}")
     } else {
-        Ok(format!("{host}:{port}"))
-    }
+        format!("{host}:{port}")
+    };
+    Ok((bind, port))
 }
 
 fn prompt_port<R: BufRead>(input: &mut R, p: &Palette, default_port: u16) -> io::Result<u16> {
@@ -374,8 +612,10 @@ fn prompt_uuid<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
     Ok(value)
 }
 
-fn build_vless_reality<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+type BuildResult = io::Result<(String, Option<ShareParams>)>;
+
+fn build_vless_reality<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 443)?;
     let user_id = prompt_uuid(input, p)?;
 
     // Generate a REALITY keypair for the user.
@@ -417,11 +657,19 @@ fn build_vless_reality<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<Str
          \x20         user_id: {user_id}\n\
          \x20         udp_enabled: true\n"
     );
-    Ok(yaml)
+    let share = ShareParams::VlessReality {
+        port,
+        user_id,
+        sni,
+        public_key,
+        short_id,
+        vision,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_vmess<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 16823)?;
+fn build_vmess<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 16823)?;
     let user_id = prompt_uuid(input, p)?;
     let cipher = prompt_cipher(
         input,
@@ -439,11 +687,16 @@ fn build_vmess<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
          \x20   user_id: {user_id}\n\
          \x20   udp_enabled: true\n"
     );
-    Ok(yaml)
+    let share = ShareParams::Vmess {
+        port,
+        user_id,
+        cipher,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_shadowsocks<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 8388)?;
+fn build_shadowsocks<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 8388)?;
     let cipher = prompt_cipher(
         input,
         p,
@@ -481,11 +734,16 @@ fn build_shadowsocks<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<Strin
          \x20   password: \"{password}\"\n\
          \x20   udp_enabled: true\n"
     );
-    Ok(yaml)
+    let share = ShareParams::Shadowsocks {
+        port,
+        cipher,
+        password,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_trojan<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_trojan<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 443)?;
     let password = prompt(input, p, "Trojan password", None)?;
     let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
     let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
@@ -503,12 +761,18 @@ fn build_trojan<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
          \x20         type: trojan\n\
          \x20         password: \"{password}\"\n"
     );
-    Ok(yaml)
+    let share = ShareParams::Trojan {
+        port,
+        password,
+        sni,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_hysteria2<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_hysteria2<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 443)?;
     let password = prompt(input, p, "Hysteria2 password", None)?;
+    let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
     let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
     let key = prompt(input, p, "Private key path (PEM)", Some("key.pem"))?;
 
@@ -524,13 +788,19 @@ fn build_hysteria2<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String>
          \x20   password: \"{password}\"\n\
          \x20   udp_enabled: true\n"
     );
-    Ok(yaml)
+    let share = ShareParams::Hysteria2 {
+        port,
+        password,
+        sni,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_tuic<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_tuic<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 443)?;
     let uuid = prompt_uuid(input, p)?;
     let password = prompt(input, p, "TUIC password", None)?;
+    let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
     let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
     let key = prompt(input, p, "Private key path (PEM)", Some("key.pem"))?;
 
@@ -545,11 +815,17 @@ fn build_tuic<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
          \x20   uuid: {uuid}\n\
          \x20   password: \"{password}\"\n"
     );
-    Ok(yaml)
+    let share = ShareParams::Tuic {
+        port,
+        uuid,
+        password,
+        sni,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_anytls<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_anytls<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, _port) = prompt_bind_address(input, p, 443)?;
     let name = prompt(input, p, "User name (label)", Some("user1"))?;
     let password = prompt(input, p, "AnyTLS password", None)?;
     let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
@@ -571,11 +847,11 @@ fn build_anytls<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
          \x20             password: \"{password}\"\n\
          \x20         udp_enabled: true\n"
     );
-    Ok(yaml)
+    Ok((yaml, None))
 }
 
-fn build_naiveproxy<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_naiveproxy<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, port) = prompt_bind_address(input, p, 443)?;
     let username = prompt(input, p, "NaiveProxy username", Some("user1"))?;
     let password = prompt(input, p, "NaiveProxy password", None)?;
     let sni = prompt(input, p, "TLS SNI (cert domain)", Some("example.com"))?;
@@ -599,11 +875,17 @@ fn build_naiveproxy<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String
          \x20         padding: true\n\
          \x20         udp_enabled: true\n"
     );
-    Ok(yaml)
+    let share = ShareParams::Naiveproxy {
+        port,
+        username,
+        password,
+        sni,
+    };
+    Ok((yaml, Some(share)))
 }
 
-fn build_snell<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_snell<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, _port) = prompt_bind_address(input, p, 443)?;
     let cipher = prompt_cipher(
         input,
         p,
@@ -621,11 +903,11 @@ fn build_snell<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
          \x20   password: \"{password}\"\n\
          \x20   udp_enabled: true\n"
     );
-    Ok(yaml)
+    Ok((yaml, None))
 }
 
-fn build_shadowtls<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String> {
-    let address = prompt_bind_address(input, p, 443)?;
+fn build_shadowtls<R: BufRead>(input: &mut R, p: &Palette) -> BuildResult {
+    let (address, _port) = prompt_bind_address(input, p, 443)?;
     let password = prompt(input, p, "ShadowTLS password", None)?;
     let sni = prompt(input, p, "Handshake SNI (cert domain)", Some("example.com"))?;
     let cert = prompt(input, p, "Certificate path (PEM)", Some("cert.pem"))?;
@@ -656,7 +938,7 @@ fn build_shadowtls<R: BufRead>(input: &mut R, p: &Palette) -> io::Result<String>
          \x20         cipher: {ss_cipher}\n\
          \x20         password: \"{ss_password}\"\n"
     );
-    Ok(yaml)
+    Ok((yaml, None))
 }
 
 #[derive(Clone, Copy)]
@@ -666,17 +948,13 @@ enum SimpleProxy {
     Mixed,
 }
 
-fn build_socks_http<R: BufRead>(
-    input: &mut R,
-    p: &Palette,
-    kind: SimpleProxy,
-) -> io::Result<String> {
+fn build_socks_http<R: BufRead>(input: &mut R, p: &Palette, kind: SimpleProxy) -> BuildResult {
     let default_port = match kind {
         SimpleProxy::Socks => 1080,
         SimpleProxy::Http => 8080,
         SimpleProxy::Mixed => 7890,
     };
-    let address = prompt_bind_address(input, p, default_port)?;
+    let (address, _port) = prompt_bind_address(input, p, default_port)?;
     let want_auth = prompt_bool(input, p, "Require username/password auth", false)?;
 
     let type_name = match kind {
@@ -702,7 +980,7 @@ fn build_socks_http<R: BufRead>(
         yaml.push_str("    udp_enabled: true\n");
     }
 
-    Ok(yaml)
+    Ok((yaml, None))
 }
 
 /// Prompt for a cipher, presenting a numbered list of choices.

@@ -127,6 +127,23 @@ Mixed (HTTP+SOCKS5). It auto-generates keys/UUIDs/short IDs and Shadowsocks-2022
 fills sensible defaults, validates the result, and writes it to `config.shoes.yaml`
 (or a path you choose).
 
+For VLESS+REALITY, VMess, Shadowsocks, Trojan, Hysteria2, TUIC, and NaiveProxy the
+wizard also prints a client **import link** after saving (it prompts for your server's
+public IP/domain, since the bind address is usually `0.0.0.0`). Paste the link into
+v2rayN / Shadowrocket / Clash-family clients to import the node. Example:
+
+```
+-- Client import link --
+Server public IP or domain (for the share link) [www.microsoft.com]: 203.0.113.10
+Node label [shoes]: my-node
+
+  import URL (VLESS-REALITY)
+  vless://<uuid>@203.0.113.10:443?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=<pubkey>&sid=<shortid>&type=tcp&flow=xtls-rprx-vision#my-node
+```
+
+Protocols without a widely-adopted share-link format (AnyTLS, Snell, ShadowTLS,
+SOCKS5, HTTP, Mixed) generate a config only; configure those clients manually.
+
 ### Examples
 ```bash
 # Run with a single config file
