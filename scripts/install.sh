@@ -88,6 +88,40 @@ fetch_stdout() {
 
 # --- platform detection -----------------------------------------------------
 
+# The gnu release requires glibc >= 2.38. Return success (0) when the system
+# glibc is older than that or cannot be determined, so the caller falls back to
+# the static musl build. Returns failure (non-zero) when glibc is new enough.
+glibc_too_old() {
+    _ver=""
+    # Prefer `getconf`, then `ldd --version`, to read the glibc version.
+    if command -v getconf >/dev/null 2>&1; then
+        _ver="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+    fi
+    if [ -z "$_ver" ] && command -v ldd >/dev/null 2>&1; then
+        _ver="$(ldd --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1)"
+    fi
+
+    # No detectable glibc (e.g. musl-only system) -> prefer musl.
+    [ -z "$_ver" ] && return 0
+
+    _major="${_ver%%.*}"
+    _minor="${_ver#*.}"
+    _minor="${_minor%%.*}"
+    # Non-numeric parse -> be safe and prefer musl.
+    case "$_major$_minor" in
+    *[!0-9]*) return 0 ;;
+    esac
+
+    # Too old when major < 2, or major == 2 and minor < 38.
+    if [ "$_major" -lt 2 ]; then
+        return 0
+    fi
+    if [ "$_major" -eq 2 ] && [ "$_minor" -lt 38 ]; then
+        return 0
+    fi
+    return 1
+}
+
 detect_target() {
     _os="$(uname -s)"
     _arch="$(uname -m)"
@@ -100,10 +134,19 @@ detect_target() {
 
     case "$_os" in
     Linux)
-        # Prefer musl (static) when requested or when glibc is unavailable.
+        # Choose between the glibc (gnu) and static (musl) build.
+        #
+        # The gnu release is built on a modern CI image and links against a
+        # recent glibc (>= 2.38). On older distros that symbol version is
+        # missing, so the binary fails at startup with "GLIBC_2.xx not found".
+        # musl is fully static and runs anywhere, so we fall back to it when
+        # requested, on Alpine, or when the system glibc is too old / absent.
         if [ "${SHOES_USE_MUSL:-0}" = "1" ]; then
             _libc="musl"
         elif [ -f /etc/alpine-release ]; then
+            _libc="musl"
+        elif glibc_too_old; then
+            info "System glibc is older than 2.38; using the static musl build."
             _libc="musl"
         else
             _libc="gnu"
